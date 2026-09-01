@@ -23,7 +23,9 @@ have.
 
 - **Single binary, single process.** Pure-Go SQLite driver, no cgo — it
   cross-compiles trivially and runs anywhere that can execute a Linux
-  binary and set a few environment variables.
+  binary and set a few environment variables. Each connection opens with
+  WAL journaling and a 5s busy timeout: one writer, multiple concurrent
+  readers, per database file.
 - **Content as files.** Exercises are YAML/JSON, protected pages are
   Markdown. Running with `-task=pull` loads them into SQLite; nothing is
   ever hand-edited in the database.
@@ -39,6 +41,11 @@ have.
   classifies each exercise as too easy, about right, or too hard —
   using randomized threshold *ranges* instead of fixed cutoffs, so the
   published color can't be used to reverse-engineer exact error counts.
+- **A fixed concurrency cap.** In-flight requests are capped
+  (`MaxInFlight = 64` in `internal/httpapi/middleware.go`) to protect the
+  process from being overwhelmed. It's a source-level constant, not an
+  environment variable — worth knowing if you're sizing this for heavy
+  traffic.
 
 ## Quick start
 
@@ -49,10 +56,11 @@ go mod tidy
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/duckline .
 ```
 
-duckline expects three sibling directories around the binary's parent
-folder: `bin/` (where the binary itself lives), `content/` (your source
-files), and `data/` (created automatically — the SQLite databases). See
-[Layout](#layout) below.
+duckline derives its base folder from its own binary's location — the
+folder that contains `bin/`. Inside that base folder it expects two more
+sibling directories: `content/` (your source files, split into `act/`
+and `auth/` — see [Layout](#layout) below) and `data/` (created
+automatically, holding the SQLite databases).
 
 ```sh
 mkdir -p content/act content/auth
@@ -94,9 +102,12 @@ your-base-folder/
     └── auth/         ← *.md — one protected page per file
 ```
 
-By default, duckline infers the base folder from its own binary's
-location (`bin/duckline` → base is the folder above `bin/`). Use `-dir`
-if you need to run it from somewhere else.
+Two content types, two folders: put exercise files in `content/act/`
+and protected-page files in `content/auth/` — `-task=pull` reads both
+and populates `act.db` and `auth.db` respectively. By default, duckline
+infers the base folder from its own binary's location (`bin/duckline` →
+base is the folder above `bin/`). Use `-dir` if you need to run it from
+somewhere else.
 
 ## Configuration
 
@@ -109,7 +120,7 @@ constant.
 | `SEMAFORO_REPORT_TOKEN` | token required by `GET /api/v1/semaforo/report` |
 | `CLASS_PASSWORD` | password for Protected Pages |
 | `ALLOWED_ORIGINS` | comma-separated browser origins allowed by CORS (e.g. `https://example.com,https://www.example.com`) |
-| `SEMAFORO_FORCHETTE` | Semaforo threshold ranges, format `0.10-0.20,0.40-0.50` (YELLOW range first, then RED); optional |
+| `SEMAFORO_FORCHETTE` | Semaforo threshold ranges, format `0.10-0.20,0.40-0.50` (GIALLO range first, then ROSSO); optional |
 
 If `SEMAFORO_REPORT_TOKEN` or `CLASS_PASSWORD` aren't set, the
 corresponding endpoints always respond `401`. If `ALLOWED_ORIGINS` isn't
@@ -129,11 +140,29 @@ Omit it entirely and the compiled-in defaults apply.
 
 ## API
 
+The JSON wire format uses Italian for field names and for the Semaforo
+color values (the project's original language). It's a short list, so
+here it is once, up front, rather than repeated per example:
+
+| Term | Meaning |
+|---|---|
+| `domande` | questions |
+| `titolo` | title / prompt |
+| `opzioni` | options |
+| `testo` | option text |
+| `correzione` | correction/explanation (HTML) |
+| `esito` | outcome |
+| `sbagliate` | wrong answers |
+| `generato` | generated (date) |
+| `pagine` / `pagina` | pages / page |
+| `colore` | color |
+| `esercizi` | exercises |
+| `GIALLO` / `ROSSO` / `VERDE` | Semaforo colors: yellow / red / green |
+
 ### Exercises — `POST /`
 
 A single endpoint, three operations, chosen by the shape of the request
-body. Field names in the JSON wire format are Italian (the project's
-original language) — a short glossary follows each example.
+body.
 
 **Load questions** — body with only an `id`:
 
@@ -155,8 +184,6 @@ original language) — a short glossary follows each example.
   ]
 }
 ```
-> `domande` = questions · `titolo` = title/prompt · `opzioni` = options ·
-> `testo` = option text
 
 **Submit an answer** — body with `id`, `questionId`, `optionId`:
 
@@ -172,8 +199,9 @@ Response is one of:
 ```json
 { "status": "stop", "correzione": "<p>The conventional date is <strong>476 AD</strong>…</p>" }
 ```
-> `correzione` = correction/explanation, already rendered to HTML. The
-> client is never told which option was correct — only the verdict.
+
+`correzione` is already rendered to HTML. The client is never told which
+option was correct — only the verdict.
 
 **Report the outcome** — body with `id` and `esito` (even with an empty
 list):
@@ -184,8 +212,9 @@ list):
 ```json
 { "ok": true }
 ```
-> `esito` = outcome · `sbagliate` = the IDs of questions answered
-> incorrectly. This feeds the Semaforo counters — nothing else is stored.
+
+`sbagliate` lists the IDs of questions answered incorrectly. This feeds
+the Semaforo counters — nothing else is stored.
 
 **Errors** come through two channels: a non-2xx HTTP status for
 infrastructure/validation problems (malformed body, unknown page,
@@ -219,13 +248,13 @@ password again.
 {
   "generato": "2026-08-23",
   "pagine": [
-    { "pagina": "history1", "colore": "GREEN", "esercizi": ["q1", "q2"] }
+    { "pagina": "history1", "colore": "VERDE", "esercizi": ["q1", "q2"] }
   ]
 }
 ```
-> `generato` = generated (date) · `pagine`/`pagina` = pages/page ·
-> `colore` = color · `esercizi` = exercises, ordered by decreasing error
-> rate — the sequence only, never raw counts.
+
+`esercizi` is ordered by decreasing error rate — the sequence only,
+never raw counts.
 
 Wrong or missing token → `401`. This endpoint isn't meant to be called
 from a browser — it's for your own scripts, bots, or terminal use, so
@@ -250,8 +279,8 @@ domande:                         # display order = file order
   - id: q1                       # required, unique within the page
     titolo: In what year did the Western Roman Empire fall?
     corretta: b                  # required: id of the correct option
-    correzione: |                # Markdown; if omitted, a generic
-      The conventional date is **476 AD**, with the deposition of      # notice is shown instead
+    correzione: |                # Markdown; if omitted, a generic notice is shown instead
+      The conventional date is **476 AD**, with the deposition of
       Romulus Augustulus.
     opzioni:                     # at least one; ids unique within the question
       - { id: a, testo: "376 AD" }
@@ -282,15 +311,20 @@ infer the exact cutoff, and knowing a page's color doesn't let you back
 out its precise error count. With `min == max` a range degenerates into
 a classic fixed threshold, if you'd rather not randomize.
 
-A page's aggregate error rate below that week's YELLOW draw → too easy;
-at or above the RED draw → too hard; in between → fine. Ranges can't
-overlap or fall outside `[0, 1]` — a malformed `SEMAFORO_FORCHETTE`
-fails the task loudly (exit 1) rather than producing silently wrong
-colors.
+A page's aggregate error rate below that week's GIALLO draw → too easy
+(GIALLO); at or above the ROSSO draw → too hard (ROSSO); in between →
+fine (VERDE). Ranges can't overlap or fall outside `[0, 1]` — a
+malformed `SEMAFORO_FORCHETTE` fails the task loudly (exit 1) rather
+than producing silently wrong colors.
 
 The draw happens once per run, so every page shares the same thresholds
 for that week. Drawing independently per page is a straightforward
 variant if you want the randomization to resist inference even harder.
+
+## Contributing
+
+Bug reports and pull requests are welcome — open an issue if something's
+broken or unclear, or send a PR directly if you've already got a fix.
 
 ## License
 
