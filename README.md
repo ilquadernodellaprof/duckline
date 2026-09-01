@@ -1,157 +1,297 @@
 # duckline
 
-Backend Go di **Coinhier**, lo spazio dinamico che affianca il sito statico
-de "il Quaderno della Prof". Licenza **AGPL-3.0-or-later** (vedi `LICENSE`).
+A small, self-contained Go server for two things a static site often
+needs but shouldn't have to build from scratch: **scored, multiple-choice
+exercises** delivered over a tiny JSON API, and **password-protected
+pages** rendered from Markdown. It ships as a single binary, stores its
+data in embedded SQLite (pure Go, no cgo), and is configured entirely
+through environment variables.
 
-`duckline` è sia il nome del modulo Go sia il nome del binario compilato.
-`coinhier` non è mai il nome di un file o di un comando: è solo il nome del
-sito/cartella su alwaysdata (`coinhier.alwaysdata.net`).
+Licensed under **AGPL-3.0-or-later** (see `LICENSE`).
 
-## Modalità (un solo pattern, sempre a flag)
+## Why
 
-```
-duckline                        # server HTTP (default)
-duckline -task=pull             # carica content/ in act.db e auth.db
-duckline -task=semaforo-report  # report settimanale del Semaforo
-```
+Static sites are great until you need something interactive — a quiz
+with immediate feedback, or a page that shouldn't be public but doesn't
+warrant real user accounts. duckline covers exactly that gap without
+pulling in a CMS or a database server: you write exercises and protected
+pages as plain files, duckline turns them into two SQLite databases, and
+a handful of JSON endpoints serve them to whatever frontend you already
+have.
 
-Ogni modalità `-task=` esce con codice `1` in caso di fallimento, così
-l'email di errore automatica degli Scheduled Tasks di alwaysdata fa da
-sistema di notifica. Flag opzionale `-dir` per indicare la cartella base
-(default: dedotta dal percorso del binario, vedi Assunzioni).
+## Features
 
-## Build
+- **Single binary, single process.** Pure-Go SQLite driver, no cgo — it
+  cross-compiles trivially and runs anywhere that can execute a Linux
+  binary and set a few environment variables.
+- **Content as files.** Exercises are YAML/JSON, protected pages are
+  Markdown. Running with `-task=pull` loads them into SQLite; nothing is
+  ever hand-edited in the database.
+- **A small, stable JSON contract.** One endpoint for exercises, three
+  request shapes, enough to build a quiz frontend against without a
+  client library.
+- **Privacy by default.** No cookies, no sessions, no IP logging — not a
+  toggle, just how the code is written.
+- **Safe-by-default secrets.** If a required token or password isn't
+  set, the corresponding endpoint always answers `401`. A missing
+  environment variable can never open a door that should be locked.
+- **A privacy-preserving difficulty report ("Semaforo").** A weekly job
+  classifies each exercise as too easy, about right, or too hard —
+  using randomized threshold *ranges* instead of fixed cutoffs, so the
+  published color can't be used to reverse-engineer exact error counts.
 
-```
+## Quick start
+
+```sh
+git clone https://github.com/ilquadernodellaprof/duckline.git
+cd duckline
+go mod tidy
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/duckline .
 ```
 
-Driver SQLite **puro Go** (`modernc.org/sqlite`): nessun cgo, la
-cross-compilazione da GitHub Actions funziona così com'è. Ogni connessione
-è aperta con journal **WAL** e `busy_timeout` di 5 s (un solo scrittore per
-database, più lettori concorrenti). Prima build: `go mod tidy` per
-risolvere `go.sum` (le versioni in `go.mod` sono indicative).
+duckline expects three sibling directories around the binary's parent
+folder: `bin/` (where the binary itself lives), `content/` (your source
+files), and `data/` (created automatically — the SQLite databases). See
+[Layout](#layout) below.
 
-## Layout su alwaysdata
+```sh
+mkdir -p content/act content/auth
+# write at least one exercise file and one protected page, then:
+
+CLASS_PASSWORD=changeme SEMAFORO_REPORT_TOKEN=$(openssl rand -hex 32) \
+  ./bin/duckline -task=pull
+
+CLASS_PASSWORD=changeme SEMAFORO_REPORT_TOKEN=$(openssl rand -hex 32) \
+  ./bin/duckline
+# → listening on 127.0.0.1:3000 (defaults; override with IP / PORT)
+```
+
+## Modes
+
+A single binary, always driven by flags — no subcommands:
 
 ```
-/home/[account]/coinhier/
-├── bin/duckline      ← binario in produzione
-├── data/             ← act.db, semaforo.db, auth.db
-└── content/          ← contenuti sincronizzati, letti da -task=pull
-    ├── act/          ← *.yaml | *.yml | *.json (una pagina per file)
-    └── auth/         ← *.md (una pagina protetta per file)
+duckline                        # HTTP server (default)
+duckline -task=pull             # loads content/ into act.db and auth.db
+duckline -task=semaforo-report  # runs the weekly Semaforo report
 ```
 
-## Variabili d'ambiente (pannello del sito, mai costanti compilate)
+Every `-task=` run exits with code `1` on failure — convenient if you
+schedule it with anything that emails or alerts on non-zero exit
+(cron, systemd timers, your CI/CD provider's scheduled jobs...).
 
-| Variabile | Uso |
+Optional `-dir` flag overrides the base folder (default: derived from
+the binary's own path — see [Layout](#layout)).
+
+## Layout
+
+```
+your-base-folder/
+├── bin/duckline      ← the binary
+├── data/             ← act.db, semaforo.db, auth.db (created at runtime)
+└── content/          ← your source files, loaded by -task=pull
+    ├── act/          ← *.yaml | *.yml | *.json — one exercise page per file
+    └── auth/         ← *.md — one protected page per file
+```
+
+By default, duckline infers the base folder from its own binary's
+location (`bin/duckline` → base is the folder above `bin/`). Use `-dir`
+if you need to run it from somewhere else.
+
+## Configuration
+
+All configuration is via environment variables — nothing is a compiled-in
+constant.
+
+| Variable | Purpose |
 |---|---|
-| `IP`, `PORT` | bind di rete, fornite dalla piattaforma |
-| `SEMAFORO_REPORT_TOKEN` | token di `GET /api/v1/semaforo/report` |
-| `CLASS_PASSWORD` | password unica delle Pagine Protette |
-| `ALLOWED_ORIGINS` | origini browser ammesse dal CORS, separate da virgole (es. `https://esempio.it,https://www.esempio.it`) |
-| `SEMAFORO_FORCHETTE` | forchette del Semaforo, formato `0.10-0.20,0.40-0.50` (prima GIALLO, poi ROSSO); assente → default |
+| `IP`, `PORT` | network bind address and port |
+| `SEMAFORO_REPORT_TOKEN` | token required by `GET /api/v1/semaforo/report` |
+| `CLASS_PASSWORD` | password for Protected Pages |
+| `ALLOWED_ORIGINS` | comma-separated browser origins allowed by CORS (e.g. `https://example.com,https://www.example.com`) |
+| `SEMAFORO_FORCHETTE` | Semaforo threshold ranges, format `0.10-0.20,0.40-0.50` (YELLOW range first, then RED); optional |
 
-Se `SEMAFORO_REPORT_TOKEN` o `CLASS_PASSWORD` non sono impostate, i
-rispettivi endpoint rispondono sempre `401` (mai un default permissivo).
-Se `ALLOWED_ORIGINS` non è impostata, **nessuna** origine browser è
-ammessa: il server lo segnala nel log all'avvio e le fetch dal sito
-vengono bloccate dal CORS — nessun dominio è cablato nel codice.
+If `SEMAFORO_REPORT_TOKEN` or `CLASS_PASSWORD` aren't set, the
+corresponding endpoints always respond `401`. If `ALLOWED_ORIGINS` isn't
+set, **no** browser origin is allowed — duckline logs this at startup
+rather than silently allowing everything.
 
-**Nota alwaysdata**: le variabili dell'Environment del sito valgono solo
-per il processo del sito, non per gli Scheduled Tasks. `SEMAFORO_FORCHETTE`
-serve al task del report, quindi va messa inline nel comando del task:
+If you run `-task=semaforo-report` through a scheduler that doesn't
+inherit your process's environment (a bare cron entry, for instance),
+pass `SEMAFORO_FORCHETTE` inline in the command itself rather than
+relying on it being set elsewhere:
 
 ```
-SEMAFORO_FORCHETTE=0.10-0.20,0.40-0.50 /home/ACCOUNT/coinhier/bin/duckline -task=semaforo-report
+SEMAFORO_FORCHETTE=0.10-0.20,0.40-0.50 /path/to/duckline -task=semaforo-report
 ```
 
-(oppure si omette e valgono i default compilati).
+Omit it entirely and the compiled-in defaults apply.
 
-## Endpoint
+## API
 
-| Rotta | Cosa |
-|---|---|
-| `POST /` | ACT: un solo endpoint, tre operazioni per forma del payload (contratto di `act.js`) |
-| `POST /api/v1/protected` | Pagine Protette (`{ id, password }`) |
-| `GET /api/v1/semaforo/report?token=…` | ultimo report del Semaforo |
+### Exercises — `POST /`
 
-Canale d'errore duale (da `act.js`): errori applicativi → HTTP 200 con
-campo `"error"`; errori di infrastruttura/validazione → HTTP non-2xx.
+A single endpoint, three operations, chosen by the shape of the request
+body. Field names in the JSON wire format are Italian (the project's
+original language) — a short glossary follows each example.
 
-Privacy: il codice non legge **mai** `X-Real-IP`, non scrive IP in log o
-database, non usa cookie né sessioni.
+**Load questions** — body with only an `id`:
 
-## Formato dei contenuti
+```json
+{ "id": "history1" }
+```
 
-Pagina ACT (`content/act/storia1.yaml`):
+```json
+{
+  "domande": [
+    {
+      "id": "q1",
+      "titolo": "In what year did the Western Roman Empire fall?",
+      "opzioni": [
+        { "id": "a", "testo": "376 AD" },
+        { "id": "b", "testo": "476 AD" }
+      ]
+    }
+  ]
+}
+```
+> `domande` = questions · `titolo` = title/prompt · `opzioni` = options ·
+> `testo` = option text
+
+**Submit an answer** — body with `id`, `questionId`, `optionId`:
+
+```json
+{ "id": "history1", "questionId": "q1", "optionId": "a" }
+```
+
+Response is one of:
+
+```json
+{ "status": "next" }
+```
+```json
+{ "status": "stop", "correzione": "<p>The conventional date is <strong>476 AD</strong>…</p>" }
+```
+> `correzione` = correction/explanation, already rendered to HTML. The
+> client is never told which option was correct — only the verdict.
+
+**Report the outcome** — body with `id` and `esito` (even with an empty
+list):
+
+```json
+{ "id": "history1", "esito": { "sbagliate": ["q1"] } }
+```
+```json
+{ "ok": true }
+```
+> `esito` = outcome · `sbagliate` = the IDs of questions answered
+> incorrectly. This feeds the Semaforo counters — nothing else is stored.
+
+**Errors** come through two channels: a non-2xx HTTP status for
+infrastructure/validation problems (malformed body, unknown page,
+service overloaded), or an HTTP 200 whose body contains an `"error"`
+field for application-level problems (page or question doesn't exist,
+option doesn't belong to the question). Example:
+
+```json
+{ "error": "This exercise doesn't exist (yet)." }
+```
+
+### Protected pages — `POST /api/v1/protected`
+
+```json
+{ "id": "history-review", "password": "the one the user typed" }
+```
+
+Correct password (constant-time comparison against `CLASS_PASSWORD`):
+
+```json
+{ "id": "history-review", "titolo": "History review", "html": "<h1>…</h1>" }
+```
+
+Wrong password, or `CLASS_PASSWORD` unset → `401`. Unknown page (right
+password) → `404`. No cookies, no sessions — every request carries the
+password again.
+
+### Semaforo report — `GET /api/v1/semaforo/report?token=…`
+
+```json
+{
+  "generato": "2026-08-23",
+  "pagine": [
+    { "pagina": "history1", "colore": "GREEN", "esercizi": ["q1", "q2"] }
+  ]
+}
+```
+> `generato` = generated (date) · `pagine`/`pagina` = pages/page ·
+> `colore` = color · `esercizi` = exercises, ordered by decreasing error
+> rate — the sequence only, never raw counts.
+
+Wrong or missing token → `401`. This endpoint isn't meant to be called
+from a browser — it's for your own scripts, bots, or terminal use, so
+it isn't subject to CORS.
+
+### CORS
+
+Browser requests are only accepted from the origins listed in
+`ALLOWED_ORIGINS` (exact match, `Vary: Origin`, preflight `OPTIONS` →
+`204`). Non-browser tools (curl, scripts, server-to-server calls) are
+never subject to CORS.
+
+## Content format
+
+Exercise page (`content/act/history1.yaml`, `.yml` and `.json` also
+accepted):
 
 ```yaml
-id: storia1
-titolo: La caduta dell'Impero
-domande:
-  - id: q1
-    titolo: In che anno cadde l'Impero romano d'Occidente?
-    corretta: b                 # id dell'opzione giusta
-    correzione: |
-      La data convenzionale è il **476 d.C.**, con la deposizione di
-      Romolo Augustolo.
-    opzioni:
-      - { id: a, testo: "376 d.C." }
-      - { id: b, testo: "476 d.C." }
-      - { id: c, testo: "576 d.C." }
+id: history1                     # required, unique across all files
+titolo: The Fall of the Empire   # optional, not sent to the client
+domande:                         # display order = file order
+  - id: q1                       # required, unique within the page
+    titolo: In what year did the Western Roman Empire fall?
+    corretta: b                  # required: id of the correct option
+    correzione: |                # Markdown; if omitted, a generic
+      The conventional date is **476 AD**, with the deposition of      # notice is shown instead
+      Romulus Augustulus.
+    opzioni:                     # at least one; ids unique within the question
+      - { id: a, testo: "376 AD" }
+      - { id: b, testo: "476 AD" }
+      - { id: c, testo: "576 AD" }
 ```
 
-Le correzioni restano **Markdown** nel database: la conversione in HTML
-(goldmark) avviene a runtime, solo quando lo status è `stop`.
+`-task=pull` validates and refuses to load a page (exit code 1) if: an
+id is missing or duplicated, a question has no title or no options, or
+`corretta` is missing or doesn't match any option — always naming the
+file and question at fault.
 
-Pagina protetta (`content/auth/ripasso-storia.md`): l'id è il nome del file
-senza estensione; il titolo è il primo heading `# `; il testo è l'intero
-file Markdown, convertito in HTML a runtime.
+Protected page (`content/auth/history-review.md`): the page's id is the
+filename without `.md` (so `history-review.md` → id `"history-review"`),
+the title is the first `# ` heading if present, and the rest of the file
+is the body. Markdown is rendered with GFM and inline HTML enabled —
+fine for trusted, author-written sources; don't point this at
+user-submitted Markdown.
 
-## Semaforo — le forchette
+## Semaforo — the threshold ranges, explained
 
-Chi amministra non fissa soglie esatte ma **forchette**: a ogni ciclo
-settimanale duckline estrae (con `crypto/rand`, quindi senza alcun seed
-riproducibile) un valore dentro ciascuna forchetta, lo usa per mappare i
-colori di quella settimana e lo scarta — mai salvato, mai loggato. Da un
-colore non si può quindi risalire al punto esatto di taglio, né dedurre
-conteggi precisi a partire da una percentuale. Con `min == max` una
-forchetta degenera nella soglia fissa classica.
+Instead of fixing an exact error-rate cutoff, you configure **ranges**.
+On each weekly run, duckline draws (via `crypto/rand`, no reproducible
+seed) one value inside each configured range, uses those values to
+classify every page's color for that week, and immediately discards
+them — never stored, never logged. A color therefore can't be used to
+infer the exact cutoff, and knowing a page's color doesn't let you back
+out its precise error count. With `min == max` a range degenerates into
+a classic fixed threshold, if you'd rather not randomize.
 
-Configurazione via `SEMAFORO_FORCHETTE` (vedi tabella sopra): tasso
-d'errore aggregato della pagina sotto l'estratto della prima forchetta →
-GIALLO (troppo facile); dall'estratto della seconda in su → ROSSO
-(troppo difficile); in mezzo → VERDE. Le forchette non possono
-sovrapporsi né uscire da [0,1]: un valore malformato fa fallire il task
-(exit 1 → email di alwaysdata) invece di produrre colori sbagliati in
-silenzio. Senza variabile valgono i default
-(`semaforo.ForchetteDefault`): `0.10-0.20,0.40-0.50`.
+A page's aggregate error rate below that week's YELLOW draw → too easy;
+at or above the RED draw → too hard; in between → fine. Ranges can't
+overlap or fall outside `[0, 1]` — a malformed `SEMAFORO_FORCHETTE`
+fails the task loudly (exit 1) rather than producing silently wrong
+colors.
 
-L'estrazione è una per esecuzione (stesse soglie per tutte le pagine della
-settimana); un'estrazione indipendente per pagina sarebbe una variante
-minima, se si volesse rendere l'inferenza ancora più difficile.
+The draw happens once per run, so every page shares the same thresholds
+for that week. Drawing independently per page is a straightforward
+variant if you want the randomization to resist inference even harder.
 
-Il tetto di richieste in volo resta una costante isolata
-(`internal/httpapi/middleware.go`, `MaxInFlight = 64`).
+## License
 
-## Assunzioni dichiarate (da verificare con l'autrice)
-
-1. **Rotta Pagine Protette** = `POST /api/v1/protected` (non specificata
-   altrove; `act.js` non la usa). Costante `protectedPath` in
-   `internal/httpapi/server.go`.
-2. **Layout e formato di `content/`** come descritto sopra (non documentati
-   altrove). Il campo `corretta` per marcare l'opzione giusta è
-   un'invenzione necessaria: da qualche parte il dato deve vivere.
-3. **Risposta delle Pagine Protette**: `{ "id", "titolo", "html" }`, con
-   Markdown→HTML a runtime (coerente con le correzioni ACT).
-4. **Cartella base**: dedotta dal binario (`bin/duckline` → base è la
-   cartella sopra `bin/`), sovrascrivibile con `-dir`.
-5. **Conferma del report finale ACT**: `200 {"ok":true}` (act.js richiede
-   solo un oggetto JSON senza campo `"error"`).
-6. **Markdown con HTML abilitato** (`html.WithUnsafe`): i sorgenti Markdown
-   provengono esclusivamente dal repository privato dell'autrice, mai dagli
-   studenti.
-7. **Settimana senza traffico**: la cache del report viene comunque
-   sovrascritta (vuota), il log storico non riceve righe.
+AGPL-3.0-or-later. See `LICENSE`.
