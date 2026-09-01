@@ -11,13 +11,33 @@ Licensed under **AGPL-3.0-or-later** (see `LICENSE`).
 
 ## Why
 
-Static sites are great until you need something interactive — a quiz
-with immediate feedback, or a page that shouldn't be public but doesn't
-warrant real user accounts. duckline covers exactly that gap without
-pulling in a CMS or a database server: you write exercises and protected
-pages as plain files, duckline turns them into two SQLite databases, and
-a handful of JSON endpoints serve them to whatever frontend you already
-have.
+At its core, duckline does one generic thing: present a multiple-choice
+prompt, grade the answer, optionally explain it, and record the
+outcome — through three stateless JSON calls. That pattern covers
+scored exercises, but it isn't limited to them: a trivia game, a
+branching quiz, a "which of these fits you" questionnaire — anything
+built around asking a multiple-choice question and reacting to the
+answer can run on the same endpoint.
+
+Alongside that, duckline gates arbitrary content behind a single shared
+password — no accounts, no sessions, just a password re-checked on
+every request.
+
+You write both as plain files (YAML/JSON for the questions, Markdown
+for the gated pages), run `-task=pull`, and the binary serves them over
+a small JSON API. No admin UI, no database to edit by hand, no plugin
+system — bring your own frontend.
+
+## Privacy
+
+No cookies, no sessions, ever. `/api/v1/protected` re-checks the
+password on every request instead of keeping any state.
+
+The code never reads `X-Real-IP` and never writes an IP address to a
+log or a database. The outcome endpoint (`esito`) records only which
+questions were answered wrong — never who answered them. The Semaforo's
+randomized threshold ranges exist specifically so a published color
+can't be used to back out exact error counts.
 
 ## Features
 
@@ -32,8 +52,6 @@ have.
 - **A small, stable JSON contract.** One endpoint for exercises, three
   request shapes, enough to build a quiz frontend against without a
   client library.
-- **Privacy by default.** No cookies, no sessions, no IP logging — not a
-  toggle, just how the code is written.
 - **Safe-by-default secrets.** If a required token or password isn't
   set, the corresponding endpoint always answers `401`. A missing
   environment variable can never open a door that should be locked.
@@ -258,9 +276,11 @@ password again.
 `esercizi` is ordered by decreasing error rate — the sequence only,
 never raw counts.
 
-Wrong or missing token → `401`. This endpoint isn't meant to be called
-from a browser — it's for your own scripts, bots, or terminal use, so
-it isn't subject to CORS.
+Wrong or missing token → `401`. duckline doesn't ship a bot, a
+dashboard, or a client for this — it's just a token-gated JSON `GET`.
+Point whatever you want at it: a cron job, a Slack or Telegram bot, a
+scheduled task, curl from a terminal, in any language. Being outside
+the browser also means it isn't subject to CORS.
 
 ### CORS
 
