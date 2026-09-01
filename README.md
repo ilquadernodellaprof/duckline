@@ -37,10 +37,11 @@ have.
 - **Safe-by-default secrets.** If a required token or password isn't
   set, the corresponding endpoint always answers `401`. A missing
   environment variable can never open a door that should be locked.
-- **A privacy-preserving difficulty report ("Semaforo").** A weekly job
-  classifies each exercise as too easy, about right, or too hard —
-  using randomized threshold *ranges* instead of fixed cutoffs, so the
-  published color can't be used to reverse-engineer exact error counts.
+- **A privacy-preserving difficulty report ("Semaforo", Italian for
+  "traffic light").** A weekly job classifies each exercise as too easy,
+  about right, or too hard — using randomized threshold *ranges* instead
+  of fixed cutoffs, so the published color can't be used to
+  reverse-engineer exact error counts.
 - **A fixed concurrency cap.** In-flight requests are capped
   (`MaxInFlight = 64` in `internal/httpapi/middleware.go`) to protect the
   process from being overwhelmed. It's a source-level constant, not an
@@ -157,6 +158,7 @@ here it is once, up front, rather than repeated per example:
 | `pagine` / `pagina` | pages / page |
 | `colore` | color |
 | `esercizi` | exercises |
+| `Semaforo` | "traffic light" — the difficulty-report feature's name |
 | `GIALLO` / `ROSSO` / `VERDE` | Semaforo colors: yellow / red / green |
 
 ### Exercises — `POST /`
