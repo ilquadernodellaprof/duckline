@@ -1,2 +1,24 @@
-duckline
-content/
+/bin/
+
+# Runtime data: SQLite databases created by the server on first run
+/data/
+
+# Local test content used while developing
+/content/
+
+# Go build/test artifacts
+*.exe
+*.test
+*.out
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+
+# Local env/secret files
+.env
