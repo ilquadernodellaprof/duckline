@@ -34,9 +34,11 @@ No cookies, no sessions, ever. `/api/v1/protected` re-checks the
 password on every request instead of keeping any state.
 
 The code never reads `X-Real-IP` and never writes an IP address to a
-log or a database. The outcome endpoint (`esito`) records only which
-questions were answered wrong — never who answered them. The Semaforo's
-randomized threshold ranges exist specifically so a published color
+log or a database. The outcome endpoint (esito) keeps only per-question 
+tallies of right and wrong answers — anonymous scalars, one pair per exercise, 
+never who answered them. What arrives over the wire is just 
+the list of wrong answers; the right-answer count is derived, not sent.
+The Semaforo's randomized threshold ranges exist specifically so a published color
 can't be used to back out exact error counts.
 
 ## Features
@@ -117,16 +119,17 @@ your-base-folder/
 ├── bin/duckline      ← the binary
 ├── data/             ← act.db, semaforo.db, auth.db (created at runtime)
 └── content/          ← your source files, loaded by -task=pull
-    ├── act/          ← *.yaml | *.yml | *.json — one exercise page per file
+    ├── act/          ← *.yaml | *.yml | *.json — exercise pages
     └── auth/         ← *.md — one protected page per file
 ```
 
-Two content types, two folders: put exercise files in `content/act/`
-and protected-page files in `content/auth/` — `-task=pull` reads both
-and populates `act.db` and `auth.db` respectively. By default, duckline
-infers the base folder from its own binary's location (`bin/duckline` →
-base is the folder above `bin/`). Use `-dir` if you need to run it from
-somewhere else.
+Two content types, two folders: put exercise files in content/act/ 
+and protected-page files in content/auth/ — -task=pull reads both and populates act.db and auth.db respectively. 
+The convention is one page per file, with the filename as the page id; 
+for protected pages this is enforced (the id is the filename without .md), while for exercises the id comes from the id: 
+field inside the file, so the filename is only a convention. 
+By default, duckline infers the base folder from its own binary's location (bin/duckline → base is the folder above bin/). 
+Use -dir if you need to run it from somewhere else.
 
 ## Configuration
 
@@ -273,8 +276,8 @@ password again.
 }
 ```
 
-`esercizi` is ordered by decreasing error rate — the sequence only,
-never raw counts.
+Within each page, esercizi is ordered by decreasing error rate — the sequence only, never raw counts. 
+There is no ordering between pages: the report carries no numbers, so nothing ranks one page against another.
 
 Wrong or missing token → `401`. duckline doesn't ship a bot, a
 dashboard, or a client for this — it's just a token-gated JSON `GET`.
@@ -321,6 +324,9 @@ the title is the first `# ` heading if present, and the rest of the file
 is the body. Markdown is rendered with GFM and inline HTML enabled —
 fine for trusted, author-written sources; don't point this at
 user-submitted Markdown.
+
+The same rendering applies to exercise correzione fields — same GFM, same inline HTML, 
+same trust assumption: both come from author-written files, never from anything a user submits.
 
 ## Semaforo — the threshold ranges, explained
 
